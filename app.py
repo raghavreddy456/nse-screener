@@ -13,15 +13,16 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Broad high-momentum / F&O & Midcap basket (~80 most active swing & derivatives stocks)
+# Broad universe including high-beta momentum stocks
 ACTIVE_NSE_UNIVERSE = [
-    # Top Momentum & Midcaps
-    "CARTRADE.NS", "TATACHEM.NS", "SUZLON.NS", "BRIGADE.NS", "ANGELONE.NS",
-    "POLICYBZR.NS", "PAYTM.NS", "GODREJPROP.NS", "PFC.NS", "RECLTD.NS",
-    "HUDCO.NS", "IRFC.NS", "RVNL.NS", "BHEL.NS", "HAL.NS", "BEL.NS",
-    "DIXON.NS", "COFORGE.NS", "PERSISTENT.NS", "KPITTECH.NS", "FEDERALBNK.NS",
-    "IDFCFIRSTB.NS", "AUBANK.NS", "VOLTAS.NS", "POLYCAB.NS", "TRENT.NS",
-    # Core Frontline Equities
+    # High Beta / Volatile Swing Names
+    "ANGELONE.NS", "RBLBANK.NS", "CARTRADE.NS", "TATACHEM.NS", "SUZLON.NS",
+    "BRIGADE.NS", "POLICYBZR.NS", "PAYTM.NS", "GODREJPROP.NS", "PFC.NS",
+    "RECLTD.NS", "HUDCO.NS", "IRFC.NS", "RVNL.NS", "BHEL.NS", "HAL.NS",
+    "BEL.NS", "DIXON.NS", "COFORGE.NS", "PERSISTENT.NS", "KPITTECH.NS",
+    "FEDERALBNK.NS", "IDFCFIRSTB.NS", "AUBANK.NS", "VOLTAS.NS", "POLYCAB.NS",
+    "TRENT.NS", "YESBANK.NS", "BANDHANBNK.NS", "IDEA.NS", "NATIONALUM.NS",
+    # Frontline Equities
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
     "BHARTIARTL.NS", "SBIN.NS", "ITC.NS", "HINDUNILVR.NS", "LT.NS",
     "BAJFINANCE.NS", "HCLTECH.NS", "MARUTI.NS", "SUNPHARMA.NS", "TATAMOTORS.NS",
@@ -81,11 +82,18 @@ def fetch_market_snapshot():
             pivot = round((high + low + ltp) / 3, 2) if not math.isnan(high) else ltp
             vol_cr = round((vol * ltp) / 1e7, 2) if not math.isnan(vol) else 0.0
 
+            # Intraday True Range / Volatility Spread
+            day_range = max(0.0, high - low)
+            range_pct = round((day_range / ltp) * 100, 2) if ltp > 0 else 0.0
+
             clean_sym = ticker.replace(".NS", "")
             stock_rows.append({
                 "Symbol": clean_sym,
                 "LTP": round(ltp, 2),
                 "Change (%)": pct,
+                "Day High": round(high, 2),
+                "Day Low": round(low, 2),
+                "Day Range (%)": range_pct,
                 "Pivot": pivot,
                 "Turnover (Cr)": vol_cr
             })
@@ -127,16 +135,16 @@ def fetch_market_snapshot():
     return df_stk, df_sec
 
 st.title("⚡ Dynamic NSE Strategy Screener")
-st.caption("Live broad-universe screening for Top Gainers/Losers, Sector Relative Strength, and Strategy Baskets.")
+st.caption("Live multi-cap screening for Movers, High Volatility Ranges, and Strategy Baskets.")
 
-with st.spinner("Streaming NSE multi-cap quotes..."):
+with st.spinner("Downloading real-time market data..."):
     df_stocks, df_sectors = fetch_market_snapshot()
 
 if df_stocks.empty:
     st.error("Market data currently unavailable. Please verify internet access and refresh.")
     st.stop()
 
-# Sort top gainers/losers across the wide universe
+# Sorting & Metrics
 df_gainers = df_stocks.sort_values(by="Change (%)", ascending=False).head(10)
 df_losers = df_stocks.sort_values(by="Change (%)", ascending=True).head(10)
 
@@ -151,16 +159,23 @@ if worst_sector is not None:
     m3.metric("Worst Drag Sector", str(worst_sector["Sector"]), f"{worst_sector['Change (%)']:+.2f}%", delta_color="inverse")
 
 if worst_sector is not None:
-    st.error(f"🚨 HEAVIEST SECTOR DRAG: {worst_sector['Sector']} ({worst_sector['Change (%)']:+.2f}%) — Avoid long setups in this sector's stocks.")
+    st.error(f"🚨 HEAVIEST SECTOR DRAG: {worst_sector['Sector']} ({worst_sector['Change (%)']:+.2f}%) — Avoid long setups in this basket.")
 
+# Calculate setups
 df_stocks["Abs_Momentum"] = df_stocks["Change (%)"].abs()
+
+# High Volatility filter: Top 10 stocks ranked by Intraday Range % and Absolute % Move
+df_volatility = df_stocks.sort_values(by=["Day Range (%)", "Abs_Momentum"], ascending=[False, False]).head(10)
+
 df_options = df_stocks.sort_values(by="Abs_Momentum", ascending=False).head(5)
 df_mtf = df_stocks[(df_stocks["Change (%)"] > 0.1) & (df_stocks["LTP"] > df_stocks["Pivot"])].sort_values(by="Change (%)", ascending=False).head(5)
 
-tab_movers, tab_options_ui, tab_mtf_ui = st.tabs([
-    "📊 Live Gainers, Losers & Sectors",
-    "🎯 Dynamic 5 Option Trades",
-    "📈 Dynamic 5 MTF Swing Trades"
+# --- 4 Distinct Tabs ---
+tab_movers, tab_volatility_ui, tab_options_ui, tab_mtf_ui = st.tabs([
+    "📊 Top Gainers & Losers",
+    "⚡ High Volatility & Big Movers",
+    "🎯 Dynamic Option Trades",
+    "📈 Dynamic MTF Swing Trades"
 ])
 
 with tab_movers:
@@ -181,6 +196,24 @@ with tab_movers:
             text="Change (%)", template="plotly_dark", height=320
         )
         st.plotly_chart(fig_sec, use_container_width=True)
+
+with tab_volatility_ui:
+    st.subheader("⚡ Top 10 Highest Volatility & Big Movers (Intraday Swingers)")
+    st.caption("Stocks exhibiting the widest day expansion (Day High - Day Low) & strong momentum. Ideal for active intraday breakout setups.")
+    
+    st.dataframe(
+        df_volatility[["Symbol", "LTP", "Change (%)", "Day Range (%)", "Day High", "Day Low", "Pivot", "Turnover (Cr)"]],
+        use_container_width=True,
+        hide_index=True
+    )
+    
+    st.markdown("#### 🔍 Active Volatility Cards")
+    for _, row in df_volatility.head(5).iterrows():
+        is_bull = row["Change (%)"] > 0
+        direction_label = "EXPANDING UP" if is_bull else "EXPANDING DOWN"
+        with st.container(border=True):
+            st.markdown(f"**{row['Symbol']}** — LTP: ₹{row['LTP']} ({row['Change (%)']:+.2f}%) | **Range: {row['Day Range (%)']}%**")
+            st.write(f"Trend: `{direction_label}` | High: ₹{row['Day High']} | Low: ₹{row['Day Low']} | Day Pivot: ₹{row['Pivot']}")
 
 with tab_options_ui:
     st.subheader("🎯 5 Dynamically Screened Option Setups")
