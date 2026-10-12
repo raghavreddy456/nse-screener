@@ -81,12 +81,12 @@ def calculate_rsi(series: pd.Series, period: int = 14) -> float:
     rs = gain.iloc[-1] / loss.iloc[-1]
     return round(100 - (100 / (1 + rs)), 1)
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=25)
 def fetch_complete_snapshot():
     all_symbols = list(set(EXPANDED_NSE_UNIVERSE)) + list(SECTOR_MAP.values())
     
-    # auto_adjust=False ensures historical dividends/splits don't warp the real-time LTP
-    raw = yf.download(
+    # 1. Historical Daily Batch for SMA, RSI, 20-day levels
+    raw_hist = yf.download(
         all_symbols,
         period="3mo",
         interval="1d",
@@ -95,21 +95,43 @@ def fetch_complete_snapshot():
         progress=False
     )
 
+    # 2. Latest Intraday Session Batch for real-time closing tick / current price
+    raw_live = yf.download(
+        all_symbols,
+        period="1d",
+        interval="5m",
+        group_by="ticker",
+        auto_adjust=False,
+        progress=False
+    )
+
     stock_rows = []
     for ticker in EXPANDED_NSE_UNIVERSE:
         try:
-            if ticker not in raw.columns.levels[0]:
+            if ticker not in raw_hist.columns.levels[0]:
                 continue
-            df = raw[ticker].dropna(subset=["Close"])
-            if len(df) < 22:
+            df_hist = raw_hist[ticker].dropna(subset=["Close"])
+            if len(df_hist) < 22:
                 continue
 
-            open_p = float(df["Open"].iloc[-1])
-            high_p = float(df["High"].iloc[-1])
-            low_p = float(df["Low"].iloc[-1])
-            ltp = float(df["Close"].iloc[-1])
-            prev_close = float(df["Close"].iloc[-2])
-            vol = float(df["Volume"].iloc[-1]) if "Volume" in df.columns else 0.0
+            # Prior day's benchmark close
+            prev_close = float(df_hist["Close"].iloc[-2])
+
+            # Extract live prices from 5m data if available; fallback to daily bar
+            if ticker in raw_live.columns.levels[0] and not raw_live[ticker].dropna(subset=["Close"]).empty:
+                df_curr = raw_live[ticker].dropna(subset=["Close"])
+                ltp = float(df_curr["Close"].iloc[-1])
+                open_p = float(df_curr["Open"].iloc[0])
+                high_p = float(df_curr["High"].max())
+                low_p = float(df_curr["Low"].min())
+                vol = float(df_curr["Volume"].sum())
+            else:
+                df_curr = df_hist
+                ltp = float(df_curr["Close"].iloc[-1])
+                open_p = float(df_curr["Open"].iloc[-1])
+                high_p = float(df_curr["High"].iloc[-1])
+                low_p = float(df_curr["Low"].iloc[-1])
+                vol = float(df_curr["Volume"].iloc[-1]) if "Volume" in df_curr.columns else 0.0
 
             if math.isnan(ltp) or prev_close == 0 or ltp <= 0:
                 continue
@@ -119,15 +141,15 @@ def fetch_complete_snapshot():
             day_range_pct = round(((high_p - low_p) / ltp) * 100, 2)
             vol_cr = round((vol * ltp) / 1e7, 2)
 
-            avg_vol_20d = float(df["Volume"].iloc[-21:-1].mean()) if len(df) >= 21 else vol
+            avg_vol_20d = float(df_hist["Volume"].iloc[-21:-1].mean()) if len(df_hist) >= 21 else vol
             rvol = round(vol / avg_vol_20d, 2) if avg_vol_20d > 0 else 1.0
-            rsi_val = calculate_rsi(df["Close"], 14)
-            sma_50 = float(df["Close"].rolling(50).mean().iloc[-1]) if len(df) >= 50 else float(df["Close"].rolling(20).mean().iloc[-1])
-            sma_20 = float(df["Close"].rolling(20).mean().iloc[-1])
-            high_20d = float(df["High"].iloc[-21:-1].max()) if len(df) >= 21 else high_p
+            rsi_val = calculate_rsi(df_hist["Close"], 14)
+            sma_50 = float(df_hist["Close"].rolling(50).mean().iloc[-1]) if len(df_hist) >= 50 else float(df_hist["Close"].rolling(20).mean().iloc[-1])
+            sma_20 = float(df_hist["Close"].rolling(20).mean().iloc[-1])
+            high_20d = float(df_hist["High"].iloc[-21:-1].max()) if len(df_hist) >= 21 else high_p
 
-            open_low_diff_pct = round(((open_p - low_p) / open_p) * 100, 2)
-            open_high_diff_pct = round(((high_p - open_p) / open_p) * 100, 2)
+            open_low_diff_pct = round(((open_p - low_p) / open_p) * 100, 2) if open_p > 0 else 0.0
+            open_high_diff_pct = round(((high_p - open_p) / open_p) * 100, 2) if open_p > 0 else 0.0
             dist_from_50sma_pct = round(((ltp - sma_50) / sma_50) * 100, 2)
 
             stock_rows.append({
@@ -155,13 +177,18 @@ def fetch_complete_snapshot():
     sector_rows = []
     for name, sym in SECTOR_MAP.items():
         try:
-            if sym not in raw.columns.levels[0]:
+            if sym not in raw_hist.columns.levels[0]:
                 continue
-            df_sec = raw[sym].dropna(subset=["Close"])
+            df_sec = raw_hist[sym].dropna(subset=["Close"])
             if len(df_sec) < 2:
                 continue
-            ltp = float(df_sec["Close"].iloc[-1])
+
             prev = float(df_sec["Close"].iloc[-2])
+            if sym in raw_live.columns.levels[0] and not raw_live[sym].dropna(subset=["Close"]).empty:
+                ltp = float(raw_live[sym].dropna(subset=["Close"])["Close"].iloc[-1])
+            else:
+                ltp = float(df_sec["Close"].iloc[-1])
+
             pct = round(((ltp - prev) / prev) * 100, 2)
             sector_rows.append({"Sector": name, "LTP": round(ltp, 2), "Change (%)": pct})
         except Exception:
@@ -170,9 +197,9 @@ def fetch_complete_snapshot():
     return pd.DataFrame(stock_rows), pd.DataFrame(sector_rows)
 
 st.title("⚡ Dynamic NSE Top 20 Multi-Strategy Screener")
-st.caption("Live screening across 150+ equities for Intraday setups, MTF Swings, and Sector Divergence.")
+st.caption("Live streaming across 150+ equities with intraday-synchronized ticks.")
 
-with st.spinner("Downloading unadjusted market quotes..."):
+with st.spinner("Downloading real-time market quotes..."):
     df_stocks, df_sectors = fetch_complete_snapshot()
 
 if df_stocks.empty:
