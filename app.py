@@ -13,14 +13,23 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-NIFTY_50_TICKERS = [
+# Broad high-momentum / F&O & Midcap basket (~80 most active swing & derivatives stocks)
+ACTIVE_NSE_UNIVERSE = [
+    # Top Momentum & Midcaps
+    "CARTRADE.NS", "TATACHEM.NS", "SUZLON.NS", "BRIGADE.NS", "ANGELONE.NS",
+    "POLICYBZR.NS", "PAYTM.NS", "GODREJPROP.NS", "PFC.NS", "RECLTD.NS",
+    "HUDCO.NS", "IRFC.NS", "RVNL.NS", "BHEL.NS", "HAL.NS", "BEL.NS",
+    "DIXON.NS", "COFORGE.NS", "PERSISTENT.NS", "KPITTECH.NS", "FEDERALBNK.NS",
+    "IDFCFIRSTB.NS", "AUBANK.NS", "VOLTAS.NS", "POLYCAB.NS", "TRENT.NS",
+    # Core Frontline Equities
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
     "BHARTIARTL.NS", "SBIN.NS", "ITC.NS", "HINDUNILVR.NS", "LT.NS",
     "BAJFINANCE.NS", "HCLTECH.NS", "MARUTI.NS", "SUNPHARMA.NS", "TATAMOTORS.NS",
     "ONGC.NS", "KOTAKBANK.NS", "NTPC.NS", "AXISBANK.NS", "TITAN.NS",
-    "ADANIENT.NS", "DRREDDY.NS", "CIPLA.NS", "BAJAJ-AUTO.NS", "TECHM.NS",
-    "EICHERMOT.NS", "M&M.NS", "COALINDIA.NS", "HINDALCO.NS", "APOLLOHOSP.NS",
-    "WIPRO.NS", "NESTLEIND.NS", "GRASIM.NS", "JSWSTEEL.NS", "POWERGRID.NS"
+    "ADANIENT.NS", "ADANIPORTS.NS", "DRREDDY.NS", "CIPLA.NS", "BAJAJ-AUTO.NS",
+    "TECHM.NS", "EICHERMOT.NS", "M&M.NS", "COALINDIA.NS", "HINDALCO.NS",
+    "APOLLOHOSP.NS", "WIPRO.NS", "NESTLEIND.NS", "GRASIM.NS", "JSWSTEEL.NS",
+    "POWERGRID.NS", "DLF.NS", "JINDALSTEL.NS", "VEDL.NS", "TATASTEEL.NS"
 ]
 
 SECTOR_MAP = {
@@ -31,7 +40,8 @@ SECTOR_MAP = {
     "NIFTY PHARMA": "^CNXPHARMA",
     "NIFTY METAL": "^CNXMETAL",
     "NIFTY ENERGY": "^CNXENERGY",
-    "NIFTY INFRA": "^CNXINFRA"
+    "NIFTY INFRA": "^CNXINFRA",
+    "NIFTY REALTY": "^CNXREALTY"
 }
 
 st.sidebar.title("⚡ Screener Controls")
@@ -46,11 +56,11 @@ st.sidebar.caption(f"Last updated: {datetime.now().strftime('%H:%M:%S')} IST")
 
 @st.cache_data(ttl=30)
 def fetch_market_snapshot():
-    all_symbols = NIFTY_50_TICKERS + list(SECTOR_MAP.values())
+    all_symbols = ACTIVE_NSE_UNIVERSE + list(SECTOR_MAP.values())
     raw = yf.download(all_symbols, period="5d", interval="1d", group_by="ticker", progress=False)
 
     stock_rows = []
-    for ticker in NIFTY_50_TICKERS:
+    for ticker in ACTIVE_NSE_UNIVERSE:
         try:
             if ticker not in raw.columns.levels[0]:
                 continue
@@ -108,24 +118,25 @@ def fetch_market_snapshot():
 
     df_stk = pd.DataFrame(stock_rows)
     df_sec = pd.DataFrame(sector_rows)
-    
+
     if not df_stk.empty:
         df_stk = df_stk.dropna(subset=["LTP", "Change (%)", "Pivot"])
     if not df_sec.empty:
         df_sec = df_sec.dropna(subset=["LTP", "Change (%)"])
-        
+
     return df_stk, df_sec
 
 st.title("⚡ Dynamic NSE Strategy Screener")
-st.caption("Live market screening for Top Gainers/Losers, Sector Relative Strength, and Strategy Baskets.")
+st.caption("Live broad-universe screening for Top Gainers/Losers, Sector Relative Strength, and Strategy Baskets.")
 
-with st.spinner("Downloading real-time NSE market data via Yahoo Finance..."):
+with st.spinner("Streaming NSE multi-cap quotes..."):
     df_stocks, df_sectors = fetch_market_snapshot()
 
 if df_stocks.empty:
     st.error("Market data currently unavailable. Please verify internet access and refresh.")
     st.stop()
 
+# Sort top gainers/losers across the wide universe
 df_gainers = df_stocks.sort_values(by="Change (%)", ascending=False).head(10)
 df_losers = df_stocks.sort_values(by="Change (%)", ascending=True).head(10)
 
@@ -133,14 +144,14 @@ best_sector = df_sectors.sort_values(by="Change (%)", ascending=False).iloc[0] i
 worst_sector = df_sectors.sort_values(by="Change (%)", ascending=True).iloc[0] if not df_sectors.empty else None
 
 m1, m2, m3 = st.columns(3)
-m1.metric("Universe Scanned", f"{len(df_stocks)} Stocks")
+m1.metric("Universe Scanned", f"{len(df_stocks)} Equities")
 if best_sector is not None:
     m2.metric("Leading Sector", str(best_sector["Sector"]), f"{best_sector['Change (%)']:+.2f}%")
 if worst_sector is not None:
     m3.metric("Worst Drag Sector", str(worst_sector["Sector"]), f"{worst_sector['Change (%)']:+.2f}%", delta_color="inverse")
 
 if worst_sector is not None:
-    st.error(f"🚨 HEAVIEST SECTOR DRAG: {worst_sector['Sector']} ({worst_sector['Change (%)']:+.2f}%) — Invalidate bullish setups in this sector's stocks.")
+    st.error(f"🚨 HEAVIEST SECTOR DRAG: {worst_sector['Sector']} ({worst_sector['Change (%)']:+.2f}%) — Avoid long setups in this sector's stocks.")
 
 df_stocks["Abs_Momentum"] = df_stocks["Change (%)"].abs()
 df_options = df_stocks.sort_values(by="Abs_Momentum", ascending=False).head(5)
@@ -177,10 +188,10 @@ with tab_options_ui:
         ltp = float(row["LTP"])
         if math.isnan(ltp) or ltp <= 0:
             continue
-            
+
         is_bull = row["Change (%)"] > 0
         bias = "BULLISH (Call Spread / Long CE)" if is_bull else "BEARISH (Put Spread / Long PE)"
-        
+
         step = 50 if ltp > 1000 else (10 if ltp > 200 else 5)
         strike = int(round(ltp / step) * step)
         target = round(ltp * (1.025 if is_bull else 0.975), 2)
@@ -199,7 +210,7 @@ with tab_mtf_ui:
             ltp = float(row["LTP"])
             if math.isnan(ltp) or ltp <= 0:
                 continue
-                
+
             margin = round(ltp * 0.22, 2)
             target = round(ltp * 1.06, 2)
             sl = round(ltp * 0.965, 2)
