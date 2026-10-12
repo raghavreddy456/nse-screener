@@ -84,7 +84,16 @@ def calculate_rsi(series: pd.Series, period: int = 14) -> float:
 @st.cache_data(ttl=30)
 def fetch_complete_snapshot():
     all_symbols = list(set(EXPANDED_NSE_UNIVERSE)) + list(SECTOR_MAP.values())
-    raw = yf.download(all_symbols, period="3mo", interval="1d", group_by="ticker", progress=False)
+    
+    # auto_adjust=False ensures historical dividends/splits don't warp the real-time LTP
+    raw = yf.download(
+        all_symbols,
+        period="3mo",
+        interval="1d",
+        group_by="ticker",
+        auto_adjust=False,
+        progress=False
+    )
 
     stock_rows = []
     for ticker in EXPANDED_NSE_UNIVERSE:
@@ -117,7 +126,6 @@ def fetch_complete_snapshot():
             sma_20 = float(df["Close"].rolling(20).mean().iloc[-1])
             high_20d = float(df["High"].iloc[-21:-1].max()) if len(df) >= 21 else high_p
 
-            # Metric Deviations
             open_low_diff_pct = round(((open_p - low_p) / open_p) * 100, 2)
             open_high_diff_pct = round(((high_p - open_p) / open_p) * 100, 2)
             dist_from_50sma_pct = round(((ltp - sma_50) / sma_50) * 100, 2)
@@ -162,16 +170,16 @@ def fetch_complete_snapshot():
     return pd.DataFrame(stock_rows), pd.DataFrame(sector_rows)
 
 st.title("⚡ Dynamic NSE Top 20 Multi-Strategy Screener")
-st.caption(f"Scanning broad active universe for intraday setups, high-volatility movers, and leveraged MTF swings.")
+st.caption("Live screening across 150+ equities for Intraday setups, MTF Swings, and Sector Divergence.")
 
-with st.spinner("Downloading real-time quotes for 150+ equities..."):
+with st.spinner("Downloading unadjusted market quotes..."):
     df_stocks, df_sectors = fetch_complete_snapshot()
 
 if df_stocks.empty:
     st.error("Market data currently unavailable. Please verify internet connectivity and refresh.")
     st.stop()
 
-# Summary Bar
+# Summary KPI Cards
 best_sector = df_sectors.sort_values(by="Change (%)", ascending=False).iloc[0] if not df_sectors.empty else None
 worst_sector = df_sectors.sort_values(by="Change (%)", ascending=True).iloc[0] if not df_sectors.empty else None
 
@@ -185,7 +193,7 @@ if worst_sector is not None:
 if worst_sector is not None:
     st.error(f"🚨 WEAKEST SECTOR: {worst_sector['Sector']} ({worst_sector['Change (%)']:+.2f}%) — Avoid long setups in this basket.")
 
-# Navigation Tabs
+# Primary Strategy Tabs
 tab_intra, tab_mtf, tab_volatility, tab_overview, tab_sectors = st.tabs([
     f"🔥 Top {target_display_count} Intraday Setups",
     f"🎯 Top {target_display_count} MTF Swings",
@@ -195,7 +203,7 @@ tab_intra, tab_mtf, tab_volatility, tab_overview, tab_sectors = st.tabs([
 ])
 
 # ---------------------------------------------------------
-# Tab 1: Top 20 Intraday Setups
+# Tab 1: Top Intraday Setups
 # ---------------------------------------------------------
 with tab_intra:
     st.subheader(f"🔥 Top {target_display_count} Intraday Setups")
@@ -212,7 +220,6 @@ with tab_intra:
     )
 
     if "Open = Low" in intra_mode:
-        # Sort primarily by lowest deviation between Open and Low, then by Change %
         sorted_df = df_stocks[(df_stocks["LTP"] >= df_stocks["Open"])].sort_values(
             by=["OpenLow_Diff", "Change (%)"], ascending=[True, False]
         )
@@ -267,7 +274,7 @@ with tab_intra:
             e4.metric("Strict Stop Loss", f"₹{sl}", delta_color="inverse")
 
 # ---------------------------------------------------------
-# Tab 2: Top 20 MTF Swings
+# Tab 2: Top MTF Swings
 # ---------------------------------------------------------
 with tab_mtf:
     st.subheader(f"🎯 Top {target_display_count} MTF Positional Swings (4x Leverage)")
@@ -283,7 +290,6 @@ with tab_mtf:
     )
 
     if "50-Day SMA Pullback" in mtf_strat:
-        # Ranked by closeness to 50 SMA with positive baseline
         df_stocks["SMA_Distance_Abs"] = df_stocks["Dist_50SMA"].abs()
         sorted_mtf = df_stocks[(df_stocks["LTP"] >= df_stocks["50 SMA"] * 0.95)].sort_values(
             by=["SMA_Distance_Abs", "Change (%)"], ascending=[True, False]
@@ -292,7 +298,6 @@ with tab_mtf:
         df_stocks["Breakout_Proximity"] = round(((df_stocks["Day High"] - df_stocks["20D High"]) / df_stocks["20D High"]) * 100, 2)
         sorted_mtf = df_stocks.sort_values(by=["Breakout_Proximity", "RVOL"], ascending=[False, False])
     else:
-        # RSI between 38 and 54 ranked from 40 upward
         sorted_mtf = df_stocks[(df_stocks["RSI (14)"] >= 35) & (df_stocks["RSI (14)"] <= 55)].sort_values(
             by=["RSI (14)", "Change (%)"], ascending=[True, False]
         )
@@ -316,7 +321,7 @@ with tab_mtf:
             st.write(f"Target 1 (+5.5%): ₹{t1} | Target 2 (+10%): ₹{t2} | Stop Loss (-3.5%): ₹{sl} | 50 SMA: ₹{row['50 SMA']}")
 
 # ---------------------------------------------------------
-# Tab 3: Top 20 High Volatility
+# Tab 3: Top High Volatility
 # ---------------------------------------------------------
 with tab_volatility:
     st.subheader(f"⚡ Top {target_display_count} High Volatility & Momentum Equities")
